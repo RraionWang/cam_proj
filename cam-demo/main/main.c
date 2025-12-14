@@ -40,11 +40,7 @@
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
-#include "freertos/FreeRTOSConfig.h"
 #include "freertos/task.h"
-#include  "esp_lcd_types.h"
-#include "esp_lcd_panel_ops.h"
-#include "freertos/queue.h"
 
 // support IDF 5.x
 #ifndef portTICK_RATE_MS
@@ -53,16 +49,28 @@
 
 #include "esp_camera.h"
 
-#define BOARD_ESP32S3_XIAO 1
+#define BOARD_ESP32CAM_AITHINKER 1
 
-#include "camera_pinout.h"
 
-static const char *TAG = "example:take_picture";
+#include "esp_lcd_panel_ops.h"
 
-#include "lcd_driver.h"
 
 static QueueHandle_t xQueueLCDFrame = NULL; 
 
+
+esp_lcd_panel_handle_t panel_handle = NULL ; 
+
+
+
+#include "camera_pinout.h"
+#include "lcd_driver.h"
+
+#include "freertos/queue.h"
+
+
+static const char *TAG = "example:take_picture";
+
+#if ESP_CAMERA_SUPPORTED
 static camera_config_t camera_config = {
     .pin_pwdn = CAM_PIN_PWDN,
     .pin_reset = CAM_PIN_RESET,
@@ -82,23 +90,23 @@ static camera_config_t camera_config = {
     .pin_href = CAM_PIN_HREF,
     .pin_pclk = CAM_PIN_PCLK,
 
-    // XCLK 20MHz or 10MHz for OV2640 double FPS (Experimental)
+    //XCLK 20MHz or 10MHz for OV2640 double FPS (Experimental)
     .xclk_freq_hz = 40000000,
     .ledc_timer = LEDC_TIMER_0,
     .ledc_channel = LEDC_CHANNEL_0,
 
-    .pixel_format = PIXFORMAT_RGB565, // YUV422,GRAYSCALE,RGB565,JPEG
-    .frame_size = FRAMESIZE_QVGA,     // QQVGA-UXGA, For ESP32, do not use sizes above QVGA when not JPEG. The performance of the ESP32-S series has improved a lot, but JPEG mode always gives better frame rates.
+    .pixel_format = PIXFORMAT_RGB565, //YUV422,GRAYSCALE,RGB565,JPEG
+    .frame_size = FRAMESIZE_QVGA,    //QQVGA-UXGA, For ESP32, do not use sizes above QVGA when not JPEG. The performance of the ESP32-S series has improved a lot, but JPEG mode always gives better frame rates.
 
-    .jpeg_quality = 12, // 0-63, for OV series camera sensors, lower number means higher quality
-    .fb_count = 1,      // When jpeg mode is used, if fb_count more than one, the driver will work in continuous mode.
-    .fb_location = CAMERA_FB_IN_DRAM,
+    .jpeg_quality = 12, //0-63, for OV series camera sensors, lower number means higher quality
+    .fb_count = 1,       //When jpeg mode is used, if fb_count more than one, the driver will work in continuous mode.
+    .fb_location = CAMERA_FB_IN_PSRAM,
     .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
 };
 
 static esp_err_t init_camera(void)
 {
-    // initialize the camera
+    //initialize the camera
     esp_err_t err = esp_camera_init(&camera_config);
     if (err != ESP_OK)
     {
@@ -108,77 +116,89 @@ static esp_err_t init_camera(void)
 
     return ESP_OK;
 }
+#endif
 
 
 
-esp_lcd_panel_handle_t panel_handle = NULL ; 
 
-// lcd处理任务
-static void task_process_lcd(void *arg)
-{
-    camera_fb_t *frame = NULL;
 
-    while (true)
-    {
-        if (xQueueReceive(xQueueLCDFrame, &frame, portMAX_DELAY))
-        {
-            esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, frame->width, frame->height, (uint16_t *)frame->buf);
-            esp_camera_fb_return(frame);
 
-        }
-    }
-}
+// // lcd处理任务
+// static void task_process_lcd(void *arg)
+// {
+//     camera_fb_t *frame = NULL;
 
-// 摄像头处理任务
-static void task_process_camera(void *arg)
-{
-    while (true)
-    {
-        camera_fb_t *frame = esp_camera_fb_get();
-        if (frame){
-            xQueueSend(xQueueLCDFrame, &frame, portMAX_DELAY);
-        }else {
-            // **关键点：如果获取帧失败 (返回 NULL)**，必须调用 vTaskDelay
-            // 以让出 CPU 周期，确保 WDT 被重置，避免重启。
-            ESP_LOGE(TAG, "Camera capture failed, retrying...");
-            vTaskDelay(pdMS_TO_TICKS(10)); // 让出 CPU 10ms
-        }
+//     while (true)
+//     {
+//         if (xQueueReceive(xQueueLCDFrame, &frame, portMAX_DELAY))
+//         {
+//             esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, frame->width, frame->height, (uint16_t *)frame->buf);
+//             esp_camera_fb_return(frame);
+
+//         }
+//     }
+// }
+
+// // 摄像头处理任务
+// static void task_process_camera(void *arg)
+// {
+//     while (true)
+//     {
+//         camera_fb_t *frame = esp_camera_fb_get();
+//         if (frame){
+//             xQueueSend(xQueueLCDFrame, &frame, portMAX_DELAY);
+//         }else {
+//             // **关键点：如果获取帧失败 (返回 NULL)**，必须调用 vTaskDelay
+//             // 以让出 CPU 周期，确保 WDT 被重置，避免重启。
+//             ESP_LOGE(TAG, "Camera capture failed, retrying...");
+//             vTaskDelay(pdMS_TO_TICKS(10)); // 让出 CPU 10ms
+//         }
 
             
-    }
-}
-
-
-static uint8_t temp[172][320] = {0} ; 
-
-
+//     }
+// }
 
 
 void app_main(void)
 {
-init_camera() ; 
-panel_handle = init_lcd() ; 
-    
-//  xQueueLCDFrame = xQueueCreate(2, sizeof(camera_fb_t *));
-//     xTaskCreatePinnedToCore(task_process_camera, "task_process_camera", 3 * 1024, NULL, 5, NULL, 1);
-//     xTaskCreatePinnedToCore(task_process_lcd, "task_process_lcd", 4 * 1024, NULL, 5, NULL, 0);
 
-while(1){
 
-    ESP_LOGI(TAG, "Taking picture...");
+    esp_lcd_panel_handle_t panel_handle = init_lcd() ; 
+
+
+// #if ESP_CAMERA_SUPPORTED
+    if(ESP_OK != init_camera()) {
+        return;
+    }
+
+        
+    // xQueueLCDFrame = xQueueCreate(2, sizeof(camera_fb_t *));
+    // xTaskCreatePinnedToCore(task_process_camera, "task_process_camera", 5 * 1024, NULL, 5, NULL, 1);
+    // xTaskCreatePinnedToCore(task_process_lcd, "task_process_lcd", 5 * 1024, NULL, 5, NULL, 0);
+
+
+
+
+
+    while (1)
+    {
+        ESP_LOGI(TAG, "Taking picture...");
         camera_fb_t *pic = esp_camera_fb_get();
+
+
+         esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, pic->width ,pic->height, pic->buf);
 
         // use pic->buf to access the image
         ESP_LOGI(TAG, "Picture taken! Its size was: %zu bytes", pic->len);
-
-      
-
-        esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, pic->width, pic->height, (uint16_t *)pic->buf);
         
         esp_camera_fb_return(pic);
 
-        //  vTaskDelay(pdMS_TO_TICKS(50));
-}
-}
+        // vTaskDelay(5000 / portTICK_RATE_MS);
+    }
+// #else
+//     ESP_LOGE(TAG, "Camera support is not available for this chip");
+//     return;
+// #endif
 
 
+}

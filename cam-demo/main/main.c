@@ -51,22 +51,20 @@
 
 #define BOARD_ESP32CAM_AITHINKER 1
 
-
 #include "esp_lcd_panel_ops.h"
+#include "esp_vfs_fat.h"
+#include "sdmmc_cmd.h"
+#include "driver/sdmmc_host.h"
 
+static QueueHandle_t xQueueLCDFrame = NULL;
 
-static QueueHandle_t xQueueLCDFrame = NULL; 
-
-
-esp_lcd_panel_handle_t panel_handle = NULL ; 
-
-
+esp_lcd_panel_handle_t panel_handle = NULL;
 
 #include "camera_pinout.h"
 #include "lcd_driver.h"
 
 #include "freertos/queue.h"
-
+#include "my_fs.h"
 
 static const char *TAG = "example:take_picture";
 
@@ -90,23 +88,23 @@ static camera_config_t camera_config = {
     .pin_href = CAM_PIN_HREF,
     .pin_pclk = CAM_PIN_PCLK,
 
-    //XCLK 20MHz or 10MHz for OV2640 double FPS (Experimental)
-    .xclk_freq_hz = 40000000,
+    // XCLK 20MHz or 10MHz for OV2640 double FPS (Experimental)
+    .xclk_freq_hz = 20000000,
     .ledc_timer = LEDC_TIMER_0,
     .ledc_channel = LEDC_CHANNEL_0,
 
-    .pixel_format = PIXFORMAT_RGB565, //YUV422,GRAYSCALE,RGB565,JPEG
-    .frame_size = FRAMESIZE_QVGA,    //QQVGA-UXGA, For ESP32, do not use sizes above QVGA when not JPEG. The performance of the ESP32-S series has improved a lot, but JPEG mode always gives better frame rates.
+    .pixel_format = PIXFORMAT_JPEG, // YUV422,GRAYSCALE,RGB565,JPEG
+    .frame_size = FRAMESIZE_QVGA,   // QQVGA-UXGA, For ESP32, do not use sizes above QVGA when not JPEG. The performance of the ESP32-S series has improved a lot, but JPEG mode always gives better frame rates.
 
-    .jpeg_quality = 12, //0-63, for OV series camera sensors, lower number means higher quality
-    .fb_count = 1,       //When jpeg mode is used, if fb_count more than one, the driver will work in continuous mode.
+    .jpeg_quality = 12, // 0-63, for OV series camera sensors, lower number means higher quality
+    .fb_count = 1,      // When jpeg mode is used, if fb_count more than one, the driver will work in continuous mode.
     .fb_location = CAMERA_FB_IN_PSRAM,
     .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
 };
 
 static esp_err_t init_camera(void)
 {
-    //initialize the camera
+    // initialize the camera
     esp_err_t err = esp_camera_init(&camera_config);
     if (err != ESP_OK)
     {
@@ -117,11 +115,6 @@ static esp_err_t init_camera(void)
     return ESP_OK;
 }
 #endif
-
-
-
-
-
 
 // // lcd处理任务
 // static void task_process_lcd(void *arg)
@@ -154,51 +147,103 @@ static esp_err_t init_camera(void)
 //             vTaskDelay(pdMS_TO_TICKS(10)); // 让出 CPU 10ms
 //         }
 
-            
 //     }
 // }
+
+
 
 
 void app_main(void)
 {
 
+    // sdmmc_card_t* card = init_sdcard() ;
 
-    esp_lcd_panel_handle_t panel_handle = init_lcd() ; 
+    esp_lcd_panel_handle_t panel_handle = init_lcd();
 
-
-// #if ESP_CAMERA_SUPPORTED
-    if(ESP_OK != init_camera()) {
+    // #if ESP_CAMERA_SUPPORTED
+    if (ESP_OK != init_camera())
+    {
         return;
     }
 
-        
     // xQueueLCDFrame = xQueueCreate(2, sizeof(camera_fb_t *));
     // xTaskCreatePinnedToCore(task_process_camera, "task_process_camera", 5 * 1024, NULL, 5, NULL, 1);
     // xTaskCreatePinnedToCore(task_process_lcd, "task_process_lcd", 5 * 1024, NULL, 5, NULL, 0);
 
-
-
-
-
     while (1)
     {
+
+        uint16_t *rgb565_buffer = NULL;
+
+
         ESP_LOGI(TAG, "Taking picture...");
         camera_fb_t *pic = esp_camera_fb_get();
 
+        size_t out_w = pic->width / 1;  
+        size_t out_h = pic->height / 1; 
 
-         esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, pic->width ,pic->height, pic->buf);
+        size_t rgb565_buf_size = out_w * out_h * 2;
+
+        rgb565_buffer = (uint16_t *)heap_caps_malloc(rgb565_buf_size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+
+        if (!rgb565_buffer)
+        {
+            ESP_LOGE(TAG, "Failed to allocate RGB565 buffer");
+            heap_caps_free(rgb565_buffer);
+            esp_camera_fb_return(pic);
+            continue;
+        }
+
+        if (!jpg2rgb565(pic->buf, pic->len, (uint8_t *)(rgb565_buffer), JPG_SCALE_NONE))
+        {
+            ESP_LOGE(TAG, "JPEG to RGB565 conversion failed");
+            heap_caps_free(rgb565_buffer);
+            esp_camera_fb_return(pic);
+
+            continue;
+        }
+
+        //     // 反色处理
+        // for (int i = 0; i < pic->width * pic->height; i++)
+        // {
+        //     rgb565_buffer[i] = ~rgb565_buffer[i];
+        // }
+
+        ///
+
+        // const char *path = "/sdcard/1.jpg";
+
+        // ESP_LOGI(TAG, "Opening file %s", path);
+        // FILE *f = fopen(path, "w");
+        // if (f == NULL) {
+        // ESP_LOGE(TAG, "Failed to open file for writing");
+
+        // }
+
+        // fwrite(pic->buf,1,pic->len,f);
+        // fflush(f);
+
+        // fclose(f);
+        // ESP_LOGI(TAG, "File written");
+
+        // esp_vfs_fat_sdcard_unmount("/sdcard", card);
+
+        ///
+
+        esp_lcd_panel_draw_bitmap(panel_handle, 0, 0,out_w, out_h, (uint16_t *)(rgb565_buffer));
+
+        heap_caps_free(rgb565_buffer);
 
         // use pic->buf to access the image
         ESP_LOGI(TAG, "Picture taken! Its size was: %zu bytes", pic->len);
-        
+
         esp_camera_fb_return(pic);
 
-        // vTaskDelay(5000 / portTICK_RATE_MS);
+        // vTaskDelay(pdMS_TO_TICKS(5000));
     }
-// #else
-//     ESP_LOGE(TAG, "Camera support is not available for this chip");
-//     return;
-// #endif
 
-
+    // #else
+    //     ESP_LOGE(TAG, "Camera support is not available for this chip");
+    //     return;
+    // #endif
 }

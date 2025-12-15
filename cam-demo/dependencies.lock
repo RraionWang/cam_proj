@@ -23,6 +23,22 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.3.1
+  espressif/esp_new_jpeg:
+    component_hash: 7c07831bbf11d15f84f42dc0e127094c78063b03d0dce688495773656f998d2b
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32
+    - esp32s2
+    - esp32s3
+    - esp32p4
+    - esp32c2
+    - esp32c3
+    - esp32c5
+    - esp32c6
+    version: 0.5.1
   idf:
     source:
       type: idf
@@ -36,8 +52,9 @@ dependencies:
     version: 9.2.0
 direct_dependencies:
 - espressif/esp32-camera
+- espressif/esp_new_jpeg
 - idf
 - lvgl/lvgl
-manifest_hash: 9fd438ba231e55f93209edd5b854652accc6e8dba3a16dd4fb51dbdea6459119
+manifest_hash: 4d3e96924499bf0048ea40319b7c19ca0dcaae51a97a02b03df0bb203b092a3e
 target: esp32
 version: 2.0.0

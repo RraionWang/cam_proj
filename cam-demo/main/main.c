@@ -33,7 +33,75 @@
 #include "camera_pinout.h"
 #include "lcd_driver.h"
 #include "my_fs.h"
+#include "esp_jpeg_common.h"
+#include "esp_jpeg_dec.h"
 
+
+
+
+static jpeg_pixel_format_t j_type     = JPEG_PIXEL_FORMAT_RGB565_LE;
+static jpeg_rotate_t       j_rotation = JPEG_ROTATE_0D;
+
+
+
+jpeg_error_t esp_jpeg_decode_to_320x240(uint8_t *input_buf, int len, uint8_t **output_buf, int *out_len)
+{
+    jpeg_error_t ret = JPEG_ERR_OK;
+    jpeg_dec_handle_t jpeg_dec = NULL;
+    jpeg_dec_io_t *jpeg_io = NULL;
+    jpeg_dec_header_info_t *out_info = NULL;
+    uint8_t *out_buf = NULL; 
+
+    // 1. 分配结构体内存
+    jpeg_io = calloc(1, sizeof(jpeg_dec_io_t));
+    out_info = calloc(1, sizeof(jpeg_dec_header_info_t));
+    if (jpeg_io == NULL || out_info == NULL) {
+        ret = JPEG_ERR_NO_MEM;
+        goto jpeg_dec_failed;
+    }
+
+    // 2. 配置 1/8 缩放参数
+    jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
+    config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
+    config.scale.width = 320;   // 目标宽度 (1920 / 8)
+    config.scale.height = 240;  // 目标高度 (1080 / 8)
+
+    ret = jpeg_dec_open(&config, &jpeg_dec);
+    if (ret != JPEG_ERR_OK) goto jpeg_dec_failed;
+
+    jpeg_io->inbuf = input_buf;
+    jpeg_io->inbuf_len = len;
+
+    // 3. 解析头信息
+    ret = jpeg_dec_parse_header(jpeg_dec, jpeg_io, out_info);
+    if (ret != JPEG_ERR_OK) goto jpeg_dec_failed;
+
+    // 4. 按照 256x192 申请输出内存 (RGB565 每个像素 2 字节)
+    *out_len = 320 * 240 * 2; 
+    out_buf = jpeg_calloc_align(*out_len, 16);
+    if (out_buf == NULL) {
+        ret = JPEG_ERR_NO_MEM;
+        goto jpeg_dec_failed;
+    }
+
+    jpeg_io->outbuf = out_buf;
+    *output_buf = out_buf;
+
+    // 5. 执行解码
+    ret = jpeg_dec_process(jpeg_dec, jpeg_io);
+
+jpeg_dec_failed:
+    if (ret != JPEG_ERR_OK && out_buf != NULL) {
+        jpeg_free_align(out_buf);
+        *output_buf = NULL;
+    }
+    
+    if (jpeg_dec) jpeg_dec_close(jpeg_dec);
+    if (jpeg_io) free(jpeg_io);
+    if (out_info) free(out_info);
+    
+    return ret;
+}
 
 #define FUNC_SHOT 1
 
@@ -71,8 +139,8 @@ static camera_config_t camera_config = {
   .ledc_channel = LEDC_CHANNEL_0,
 
   .pixel_format = PIXFORMAT_JPEG, 
-  .frame_size = FRAMESIZE_QVGA,  
-  .jpeg_quality = 12, 
+  .frame_size = FRAMESIZE_VGA,  
+  .jpeg_quality = 10, 
   .fb_count = 1,   
   .fb_location = CAMERA_FB_IN_PSRAM,
   .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
@@ -137,11 +205,6 @@ static void get_uptime_hhmmss(char *out, size_t len)
 void app_main(void)
 {
 
-
-
-
-
-
   #if FUNC_SHOT 
       sdmmc_card_t* card = init_sdcard() ; 
   #endif
@@ -187,98 +250,61 @@ void app_main(void)
         return;
     }
 
-    while(1){
-         uint16_t *rgb565_buffer = NULL;
-
-          #if FUNC_SHOT 
-
-        if(g_take_photo){
-        g_take_photo = false ;
-
-        camera_fb_t *pic2 = esp_camera_fb_get();
     
-        ESP_LOGI(TAG,"开始保存照片了") ; 
+    while(1){
+        uint8_t *rgb565_buffer = NULL; // 修改为 uint8_t 指针以匹配函数参数
+        int out_len = 0;
 
-        char ts[16];
-        char filename[64];
-        get_uptime_hhmmss(ts, sizeof(ts));
-        snprintf(filename, sizeof(filename), "/sdcard/IMG_%s.jpg", ts);
+        #if FUNC_SHOT 
+        if(g_take_photo){
+            g_take_photo = false;
+            camera_fb_t *pic2 = esp_camera_fb_get();
+            if (pic2) {
+                ESP_LOGI(TAG,"开始保存照片了");
+                char ts[16];
+                char filename[64];
+                get_uptime_hhmmss(ts, sizeof(ts));
+                snprintf(filename, sizeof(filename), "/sdcard/IMG_%s.jpg", ts);
 
-
-        ESP_LOGI(TAG,"文件名字是%s",filename) ; 
-
-        FILE *f = fopen(filename, "wb");
-        if (f) {
-          fwrite(pic2->buf, 1, pic2->len, f);
-          fflush(f); 
-          fclose(f);
-          ESP_LOGI(TAG,"照片保存完成了") ; 
-        }else{
-                ESP_LOGI(TAG,"文件打开失败") ; 
+                FILE *f = fopen(filename, "wb");
+                if (f) {
+                    fwrite(pic2->buf, 1, pic2->len, f);
+                    fclose(f);
+                    ESP_LOGI(TAG,"照片保存完成了: %s", filename);
+                }
+                esp_camera_fb_return(pic2);
+            }
         }
-
-
-        esp_camera_fb_return(pic2);
- 
-
-
-         
-
-
-        // esp_vfs_fat_sdcard_unmount("/sdcard", card);
-
-        // ESP_LOGI(TAG,"卡已经卸载") ; 
-
-        }
-
         #endif
 
-        // 注意：拍照逻辑已移至 task_take_photo，此处只留预览逻辑
-
-        // 2. JPEG 解码和内存分配 (使用 MALLOC_CAP_INTERNAL for fast internal RAM)
-
-
-          // 1. 获取预览帧
+        // 1. 获取预览帧 (此时是 640x480 的 JPEG)
         camera_fb_t *pic = esp_camera_fb_get();
         if (pic == NULL) {
-            ESP_LOGE(TAG, "Failed to get camera preview frame, retrying.");
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
 
-
-        size_t out_w = pic->width/1; 
-        size_t out_h = pic->height/1; 
-        size_t rgb565_buf_size = out_w * out_h * 2;
-
-        rgb565_buffer = (uint16_t *)heap_caps_malloc(rgb565_buf_size, MALLOC_CAP_8BIT | CAMERA_FB_IN_PSRAM);
-
-        if (!rgb565_buffer) {
-            ESP_LOGE(TAG, "Failed to allocate RGB565 buffer");
-            esp_camera_fb_return(pic);
-            continue;
-        }
-
-        if (!jpg2rgb565(pic->buf, pic->len, (uint8_t *)(rgb565_buffer), JPG_SCALE_NONE)) {
-            ESP_LOGE(TAG, "JPEG to RGB565 conversion failed");
-            heap_caps_free(rgb565_buffer);
-            esp_camera_fb_return(pic);
-            continue;
-        }
-
-
-
-
-        // 3. 刷新 LCD
-        esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, pic->width, pic->height, (uint16_t *)(rgb565_buffer));
         
-        // 4. 释放资源
-         heap_caps_free(rgb565_buffer);
+        // 该函数内部会自己 malloc 内存并赋值给 rgb565_buffer
+        jpeg_error_t ret = esp_jpeg_decode_to_320x240(pic->buf, pic->len, &rgb565_buffer, &out_len);
+
+        if (ret == JPEG_ERR_OK && rgb565_buffer != NULL) {
+          
+            esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, 320, 240, (uint16_t *)rgb565_buffer);
+            
+            // 4. 重要：使用专门的对齐释放函数释放内存
+            jpeg_free_align(rgb565_buffer); 
+        } else {
+            ESP_LOGE(TAG, "JPEG decode failed, error code: %d", ret);
+        }
+
+        // 5. 释放相机缓冲区
         esp_camera_fb_return(pic);
 
-        ESP_LOGI(TAG,"running");
+        ESP_LOGI(TAG, "running");
+        // 如果系统提示看门狗超时，取消下面注释
+        // vTaskDelay(pdMS_TO_TICKS(1)); 
+    }
 
-    // vTaskDelay(pdMS_TO_TICKS(50)); // 控制预览帧率
-  }
 
 }

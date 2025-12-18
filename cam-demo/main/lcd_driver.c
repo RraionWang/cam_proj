@@ -26,8 +26,8 @@
 #include "esp_lcd_panel_st7789.h"
 #include "pin_lcd.h"
 
-
-
+#define USE_BLK 0 
+#define USE_JPEG 1
 
 
 static const char *TAG = "example";
@@ -48,7 +48,10 @@ static const char *TAG = "example";
 #define EXAMPLE_PIN_NUM_LCD_DC         LCD_DC
 #define EXAMPLE_PIN_NUM_LCD_RST        LCD_RST
 #define EXAMPLE_PIN_NUM_LCD_CS         LCD_CS
-// #define EXAMPLE_PIN_NUM_BK_LIGHT       LCD_BLK
+
+#if USE_BLK
+ #define EXAMPLE_PIN_NUM_BK_LIGHT       LCD_BLK
+#endif
 
 #define EXAMPLE_LCD_H_RES 172
 #define EXAMPLE_LCD_V_RES 320
@@ -148,12 +151,19 @@ static void example_lvgl_port_task(void *arg)
 
 esp_lcd_panel_handle_t  init_lcd(void)
 {
-    // ESP_LOGI(TAG, "Turn off LCD backlight");
-    // gpio_config_t bk_gpio_config = {
-    //     .mode = GPIO_MODE_OUTPUT,
-    //     .pin_bit_mask = 1ULL << EXAMPLE_PIN_NUM_BK_LIGHT
-    // };
-    // ESP_ERROR_CHECK(gpio_config(&bk_gpio_config));
+
+
+    #if USE_BLK
+    ESP_LOGI(TAG, "Turn off LCD backlight");
+    gpio_config_t bk_gpio_config = {
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = 1ULL << EXAMPLE_PIN_NUM_BK_LIGHT
+    };
+    ESP_ERROR_CHECK(gpio_config(&bk_gpio_config));
+    #endif
+
+
+
 
     ESP_LOGI(TAG, "Initialize SPI bus");
     spi_bus_config_t buscfg = {
@@ -185,7 +195,9 @@ esp_lcd_panel_handle_t  init_lcd(void)
         .reset_gpio_num = EXAMPLE_PIN_NUM_LCD_RST,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
         .bits_per_pixel = 16,
+        #if USE_JPEG
         .data_endian = LCD_RGB_DATA_ENDIAN_LITTLE
+        #endif 
     };
 
  ESP_LOGI(TAG, "Install ST7789 panel driver");
@@ -208,8 +220,10 @@ esp_lcd_panel_handle_t  init_lcd(void)
     // user can flush pre-defined pattern to the screen before we turn on the screen or backlight
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
 
-    // ESP_LOGI(TAG, "Turn on LCD backlight");
-    // gpio_set_level(EXAMPLE_PIN_NUM_BK_LIGHT, EXAMPLE_LCD_BK_LIGHT_ON_LEVEL);
+    #if USE_BLK
+    ESP_LOGI(TAG, "Turn on LCD backlight");
+    gpio_set_level(EXAMPLE_PIN_NUM_BK_LIGHT, EXAMPLE_LCD_BK_LIGHT_ON_LEVEL);
+    #endif
 
     return panel_handle ; 
 

@@ -1,34 +1,6 @@
 /**
- * This example takes a picture every 5s and print its size on serial monitor.
- */
-
-// =============================== SETUP ======================================
-
-// 1. Board setup (Uncomment):
-// #define BOARD_WROVER_KIT
-// #define BOARD_ESP32CAM_AITHINKER
-// #define BOARD_ESP32S3_WROOM
-// #define BOARD_ESP32S3_XIAO
-// #define BOARD_ESP32S3_GOOUUU
-// #define BOARD_ESP32S3_XIAO
-
-/**
- * 2. Kconfig setup
- *
- * If you have a Kconfig file, copy the content from
- *  https://github.com/espressif/esp32-camera/blob/master/Kconfig into it.
- * In case you haven't, copy and paste this Kconfig file inside the src directory.
- * This Kconfig file has definitions that allows more control over the camera and
- * how it will be initialized.
- */
-
-/**
- * 3. Enable PSRAM on sdkconfig:
- *
- * CONFIG_ESP32_SPIRAM_SUPPORT=y
- *
- * More info on
- * https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/kconfig.html#config-esp32-spiram-support
+ * This example takes a picture and displays the preview on LCD.
+ * High resolution photo saving is triggered by a button press.
  */
 
 // ================================ CODE ======================================
@@ -48,107 +20,116 @@
 #endif
 
 #include "esp_camera.h"
+#include "iot_button.h"
 
-#define BOARD_ESP32CAM_AITHINKER 1
-
+// 假设这些头文件存在于您的项目中
+#define CAMERA_MODEL_ESP32S3_EYE 1
+#include "button_gpio.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "driver/sdmmc_host.h"
-
-static QueueHandle_t xQueueLCDFrame = NULL;
-
-esp_lcd_panel_handle_t panel_handle = NULL;
-
+#include "esp_timer.h"
 #include "camera_pinout.h"
 #include "lcd_driver.h"
-
-#include "freertos/queue.h"
 #include "my_fs.h"
+
+
+#define FUNC_SHOT 1
+
 
 static const char *TAG = "example:take_picture";
 
+
+button_handle_t gpio_btn = NULL;
+
+static volatile bool g_take_photo = false;
+
+
 #if ESP_CAMERA_SUPPORTED
 static camera_config_t camera_config = {
-    .pin_pwdn = CAM_PIN_PWDN,
-    .pin_reset = CAM_PIN_RESET,
-    .pin_xclk = CAM_PIN_XCLK,
-    .pin_sccb_sda = CAM_PIN_SIOD,
-    .pin_sccb_scl = CAM_PIN_SIOC,
+  .pin_pwdn = CAM_PIN_PWDN,
+  .pin_reset = CAM_PIN_RESET,
+  .pin_xclk = CAM_PIN_XCLK,
+  .pin_sccb_sda = CAM_PIN_SIOD,
+  .pin_sccb_scl = CAM_PIN_SIOC,
 
-    .pin_d7 = CAM_PIN_D7,
-    .pin_d6 = CAM_PIN_D6,
-    .pin_d5 = CAM_PIN_D5,
-    .pin_d4 = CAM_PIN_D4,
-    .pin_d3 = CAM_PIN_D3,
-    .pin_d2 = CAM_PIN_D2,
-    .pin_d1 = CAM_PIN_D1,
-    .pin_d0 = CAM_PIN_D0,
-    .pin_vsync = CAM_PIN_VSYNC,
-    .pin_href = CAM_PIN_HREF,
-    .pin_pclk = CAM_PIN_PCLK,
+  .pin_d7 = CAM_PIN_D7,
+  .pin_d6 = CAM_PIN_D6,
+  .pin_d5 = CAM_PIN_D5,
+  .pin_d4 = CAM_PIN_D4,
+  .pin_d3 = CAM_PIN_D3,
+  .pin_d2 = CAM_PIN_D2,
+  .pin_d1 = CAM_PIN_D1,
+  .pin_d0 = CAM_PIN_D0,
+  .pin_vsync = CAM_PIN_VSYNC,
+  .pin_href = CAM_PIN_HREF,
+  .pin_pclk = CAM_PIN_PCLK,
 
-    // XCLK 20MHz or 10MHz for OV2640 double FPS (Experimental)
-    .xclk_freq_hz = 20000000,
-    .ledc_timer = LEDC_TIMER_0,
-    .ledc_channel = LEDC_CHANNEL_0,
+  .xclk_freq_hz = 40000000,
+  .ledc_timer = LEDC_TIMER_0,
+  .ledc_channel = LEDC_CHANNEL_0,
 
-    .pixel_format = PIXFORMAT_JPEG, // YUV422,GRAYSCALE,RGB565,JPEG
-    .frame_size = FRAMESIZE_QVGA,   // QQVGA-UXGA, For ESP32, do not use sizes above QVGA when not JPEG. The performance of the ESP32-S series has improved a lot, but JPEG mode always gives better frame rates.
-
-    .jpeg_quality = 12, // 0-63, for OV series camera sensors, lower number means higher quality
-    .fb_count = 1,      // When jpeg mode is used, if fb_count more than one, the driver will work in continuous mode.
-    .fb_location = CAMERA_FB_IN_PSRAM,
-    .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
+  .pixel_format = PIXFORMAT_JPEG, 
+  .frame_size = FRAMESIZE_QVGA,  
+  .jpeg_quality = 12, 
+  .fb_count = 1,   
+  .fb_location = CAMERA_FB_IN_PSRAM,
+  .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
 };
 
 static esp_err_t init_camera(void)
 {
-    // initialize the camera
-    esp_err_t err = esp_camera_init(&camera_config);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Camera Init Failed");
-        return err;
-    }
-
-    return ESP_OK;
+  esp_err_t err = esp_camera_init(&camera_config);
+  if (err != ESP_OK)
+  {
+    ESP_LOGE(TAG, "Camera Init Failed");
+    return err;
+  }
+  return ESP_OK;
 }
 #endif
 
-// // lcd处理任务
-// static void task_process_lcd(void *arg)
-// {
-//     camera_fb_t *frame = NULL;
 
-//     while (true)
-//     {
-//         if (xQueueReceive(xQueueLCDFrame, &frame, portMAX_DELAY))
-//         {
-//             esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, frame->width, frame->height, (uint16_t *)frame->buf);
-//             esp_camera_fb_return(frame);
+/**
+ * @brief 快门按下回调函数
+ * 仅设置一个标志位，让拍照任务去处理后续逻辑。
+ */
+static void button_shot(void *arg,void *usr_data)
+{
+  ESP_LOGI(TAG, "快门按下，触发拍照");
+  g_take_photo = true; 
+}
 
-//         }
-//     }
-// }
 
-// // 摄像头处理任务
-// static void task_process_camera(void *arg)
-// {
-//     while (true)
-//     {
-//         camera_fb_t *frame = esp_camera_fb_get();
-//         if (frame){
-//             xQueueSend(xQueueLCDFrame, &frame, portMAX_DELAY);
-//         }else {
-//             // **关键点：如果获取帧失败 (返回 NULL)**，必须调用 vTaskDelay
-//             // 以让出 CPU 周期，确保 WDT 被重置，避免重启。
-//             ESP_LOGE(TAG, "Camera capture failed, retrying...");
-//             vTaskDelay(pdMS_TO_TICKS(10)); // 让出 CPU 10ms
-//         }
+/**
+ * @brief 初始化快门按钮
+ * 修复了按钮创建和回调注册的逻辑错误。
+ */
+void init_shot_button(){
+    const button_config_t btn_cfg = {0};
+    const button_gpio_config_t btn_gpio_cfg = {
+        .gpio_num = 0,
+        .active_level = 0, // 假设按钮按下时拉低
+    };
 
-//     }
-// }
+    esp_err_t ret = iot_button_new_gpio_device(&btn_cfg, &btn_gpio_cfg, &gpio_btn);
+    
+    // **修复: 确保创建成功才注册回调**
+    if(NULL == gpio_btn) {
+        ESP_LOGE(TAG, "Button create failed: %s", esp_err_to_name(ret));
+    }
+}
+
+
+static void get_uptime_hhmmss(char *out, size_t len)
+{
+  int64_t sec = esp_timer_get_time() / 1000000;
+  int hh = (sec / 3600) % 24;
+  int mm = (sec / 60) % 60;
+  int ss = sec % 60;
+  snprintf(out, len, "%02d%02d%02d", hh, mm, ss);
+}
 
 
 
@@ -156,94 +137,148 @@ static esp_err_t init_camera(void)
 void app_main(void)
 {
 
-    // sdmmc_card_t* card = init_sdcard() ;
 
-    esp_lcd_panel_handle_t panel_handle = init_lcd();
 
-    // #if ESP_CAMERA_SUPPORTED
+
+
+
+  #if FUNC_SHOT 
+      sdmmc_card_t* card = init_sdcard() ; 
+  #endif
+
+
+    // --- 1. 初始化和硬件检查 ---
+
+    // 初始化相机
     if (ESP_OK != init_camera())
     {
         return;
     }
+    
+ 
 
-    // xQueueLCDFrame = xQueueCreate(2, sizeof(camera_fb_t *));
-    // xTaskCreatePinnedToCore(task_process_camera, "task_process_camera", 5 * 1024, NULL, 5, NULL, 1);
-    // xTaskCreatePinnedToCore(task_process_lcd, "task_process_lcd", 5 * 1024, NULL, 5, NULL, 0);
+    // 初始化 LCD 
+   esp_lcd_panel_handle_t  panel_handle = init_lcd();
+    if (panel_handle == NULL) {
+        ESP_LOGE(TAG, "LCD initialisation failed.");
+        // 不退出，但 run 任务会检查它
+    }
 
-    while (1)
-    {
+ 
+    
+    
+    // 初始化按钮 (创建 gpio_btn 句柄)
+    init_shot_button() ;
+    
+    // 注册按钮回调
+    if (gpio_btn != NULL) {
+        iot_button_register_cb(gpio_btn, BUTTON_SINGLE_CLICK, NULL, button_shot, NULL);
+        ESP_LOGI(TAG, "Button callback registered.");
+    } else {
+         ESP_LOGE(TAG, "Failed to register button callback (gpio_btn is NULL).");
+    }
 
-        uint16_t *rgb565_buffer = NULL;
 
 
-        ESP_LOGI(TAG, "Taking picture...");
-        camera_fb_t *pic = esp_camera_fb_get();
+    // 检查必要的句柄
+    if (panel_handle == NULL) {
+        ESP_LOGE(TAG, "LCD handle is NULL. Task exiting.");
+        vTaskDelete(NULL); 
+        return;
+    }
 
-        size_t out_w = pic->width / 1;  
-        size_t out_h = pic->height / 1; 
+    while(1){
+         uint16_t *rgb565_buffer = NULL;
 
-        size_t rgb565_buf_size = out_w * out_h * 2;
+          #if FUNC_SHOT 
 
-        rgb565_buffer = (uint16_t *)heap_caps_malloc(rgb565_buf_size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+        if(g_take_photo){
+        g_take_photo = false ;
 
-        if (!rgb565_buffer)
-        {
-            ESP_LOGE(TAG, "Failed to allocate RGB565 buffer");
-            heap_caps_free(rgb565_buffer);
-            esp_camera_fb_return(pic);
-            continue;
+        camera_fb_t *pic2 = esp_camera_fb_get();
+    
+        ESP_LOGI(TAG,"开始保存照片了") ; 
+
+        char ts[16];
+        char filename[64];
+        get_uptime_hhmmss(ts, sizeof(ts));
+        snprintf(filename, sizeof(filename), "/sdcard/IMG_%s.jpg", ts);
+
+
+        ESP_LOGI(TAG,"文件名字是%s",filename) ; 
+
+        FILE *f = fopen(filename, "wb");
+        if (f) {
+          fwrite(pic2->buf, 1, pic2->len, f);
+          fflush(f); 
+          fclose(f);
+          ESP_LOGI(TAG,"照片保存完成了") ; 
+        }else{
+                ESP_LOGI(TAG,"文件打开失败") ; 
         }
 
-        if (!jpg2rgb565(pic->buf, pic->len, (uint8_t *)(rgb565_buffer), JPG_SCALE_NONE))
-        {
-            ESP_LOGE(TAG, "JPEG to RGB565 conversion failed");
-            heap_caps_free(rgb565_buffer);
-            esp_camera_fb_return(pic);
 
-            continue;
-        }
+        esp_camera_fb_return(pic2);
+ 
 
-        //     // 反色处理
-        // for (int i = 0; i < pic->width * pic->height; i++)
-        // {
-        //     rgb565_buffer[i] = ~rgb565_buffer[i];
-        // }
 
-        ///
+         
 
-        // const char *path = "/sdcard/1.jpg";
-
-        // ESP_LOGI(TAG, "Opening file %s", path);
-        // FILE *f = fopen(path, "w");
-        // if (f == NULL) {
-        // ESP_LOGE(TAG, "Failed to open file for writing");
-
-        // }
-
-        // fwrite(pic->buf,1,pic->len,f);
-        // fflush(f);
-
-        // fclose(f);
-        // ESP_LOGI(TAG, "File written");
 
         // esp_vfs_fat_sdcard_unmount("/sdcard", card);
 
-        ///
+        // ESP_LOGI(TAG,"卡已经卸载") ; 
 
-        esp_lcd_panel_draw_bitmap(panel_handle, 0, 0,out_w, out_h, (uint16_t *)(rgb565_buffer));
+        }
 
-        heap_caps_free(rgb565_buffer);
+        #endif
 
-        // use pic->buf to access the image
-        ESP_LOGI(TAG, "Picture taken! Its size was: %zu bytes", pic->len);
+        // 注意：拍照逻辑已移至 task_take_photo，此处只留预览逻辑
 
+        // 2. JPEG 解码和内存分配 (使用 MALLOC_CAP_INTERNAL for fast internal RAM)
+
+
+          // 1. 获取预览帧
+        camera_fb_t *pic = esp_camera_fb_get();
+        if (pic == NULL) {
+            ESP_LOGE(TAG, "Failed to get camera preview frame, retrying.");
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
+
+        size_t out_w = pic->width/1; 
+        size_t out_h = pic->height/1; 
+        size_t rgb565_buf_size = out_w * out_h * 2;
+
+        rgb565_buffer = (uint16_t *)heap_caps_malloc(rgb565_buf_size, MALLOC_CAP_8BIT | CAMERA_FB_IN_PSRAM);
+
+        if (!rgb565_buffer) {
+            ESP_LOGE(TAG, "Failed to allocate RGB565 buffer");
+            esp_camera_fb_return(pic);
+            continue;
+        }
+
+        if (!jpg2rgb565(pic->buf, pic->len, (uint8_t *)(rgb565_buffer), JPG_SCALE_NONE)) {
+            ESP_LOGE(TAG, "JPEG to RGB565 conversion failed");
+            heap_caps_free(rgb565_buffer);
+            esp_camera_fb_return(pic);
+            continue;
+        }
+
+
+
+
+        // 3. 刷新 LCD
+        esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, pic->width, pic->height, (uint16_t *)(rgb565_buffer));
+        
+        // 4. 释放资源
+         heap_caps_free(rgb565_buffer);
         esp_camera_fb_return(pic);
 
-        // vTaskDelay(pdMS_TO_TICKS(5000));
-    }
+        ESP_LOGI(TAG,"running");
 
-    // #else
-    //     ESP_LOGE(TAG, "Camera support is not available for this chip");
-    //     return;
-    // #endif
+    // vTaskDelay(pdMS_TO_TICKS(50)); // 控制预览帧率
+  }
+
 }

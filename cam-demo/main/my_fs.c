@@ -142,12 +142,12 @@ sdmmc_card_t*  init_sdcard(void)
 
 
 
-    slot_config.clk = 14;
-    slot_config.cmd = 15;
-    slot_config.d0 = 2;
-    // slot_config.d1 = 4;
-    // slot_config.d2 = 12;
-    // slot_config.d3 = 13;
+    slot_config.clk = 39;
+    slot_config.cmd = 38;
+    slot_config.d0 = 40;
+    // slot_config.d1 = 41;
+    // slot_config.d2 = 14;
+    // slot_config.d3 = 47;
 
 
 
@@ -210,7 +210,7 @@ sdmmc_card_t*  init_sdcard(void)
 
     // Format FATFS
 
-    ret = esp_vfs_fat_sdcard_format(mount_point, card);
+    // ret = esp_vfs_fat_sdcard_format(mount_point, card);
     // if (ret != ESP_OK) {
     //     ESP_LOGE(TAG, "Failed to format FATFS (%s)", esp_err_to_name(ret));
     //     return NULL;
